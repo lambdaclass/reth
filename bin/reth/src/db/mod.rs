@@ -192,7 +192,7 @@ impl<'a, DB: Database> DbTool<'a, DB> {
 
             // walker.skip(start).take(len).collect::<Vec<_>>()
             // walker.enumerate().filter(|(idx, _)| idx >= &start).take(len).collect::<Vec<_>>()
-            walker.nth(start - 1);
+            walker.nth(start.checked_sub(1).unwrap_or_default());
             walker.take(len).collect::<Vec<_>>()
         })?;
 
