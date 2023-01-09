@@ -190,7 +190,8 @@ impl<'a, DB: Database> DbTool<'a, DB> {
                 _tx_phantom: std::marker::PhantomData,
             };
 
-            walker.skip(start).take(len).collect::<Vec<_>>()
+            // walker.skip(start).take(len).collect::<Vec<_>>()
+            walker.enumerate().filter(|(idx, _)| idx >= &start).take(len).collect::<Vec<_>>()
         })?;
 
         println!("{data:?}");
