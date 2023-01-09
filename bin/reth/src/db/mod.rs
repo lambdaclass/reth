@@ -184,14 +184,16 @@ impl<'a, DB: Database> DbTool<'a, DB> {
 
             // TODO: Upstream this in the DB trait.
             let start_walker = cursor.current().transpose();
-            let walker = Walker {
+            let mut walker = Walker {
                 cursor: &mut cursor,
                 start: start_walker,
                 _tx_phantom: std::marker::PhantomData,
             };
 
             // walker.skip(start).take(len).collect::<Vec<_>>()
-            walker.enumerate().filter(|(idx, _)| idx >= &start).take(len).collect::<Vec<_>>()
+            // walker.enumerate().filter(|(idx, _)| idx >= &start).take(len).collect::<Vec<_>>()
+            walker.nth(start - 1);
+            walker.take(len).collect::<Vec<_>>()
         })?;
 
         println!("{data:?}");
