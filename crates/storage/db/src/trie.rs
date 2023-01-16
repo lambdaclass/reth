@@ -1,20 +1,54 @@
 #![allow(missing_docs, dead_code, unused_variables, unused_imports)]
-use std::sync::Arc;
+use std::{cell::RefCell, marker::PhantomData, sync::Arc};
 
 use hash256_std_hasher::Hash256StdHasher;
 use hash_db::{AsHashDB, Prefix};
 use reference_trie::ReferenceNodeCodec;
-use reth_primitives::{keccak256, H256};
-use trie_db::{HashDB, Hasher, NodeCodec, TrieDBMut, TrieLayout};
+use reth_primitives::{keccak256, H256, KECCAK_EMPTY};
+use trie_db::{
+    CError, HashDB, Hasher, NodeCodec, TrieDBMut, TrieDBMutBuilder, TrieLayout, TrieMut,
+};
 
-use crate::database::Database;
+use crate::{
+    database::Database,
+    table::{Decode, Encode, Table},
+};
 
-pub struct DBTrie<'this, DB: Database> {
-    db: Arc<DB>,
+pub struct DBTrie<'this, DB, T>
+where
+    DB: Database,
+    T: Table,
+    T::Key: Encode + Decode,
+{
     trie: TrieDBMut<'this, DBTrieLayout>,
+    _t: PhantomData<(DB, T)>,
 }
 
-impl<'this, DB: Database> DBTrie<'this, DB> {}
+impl<'this, 'db, DB: Database + 'this, T: Table> DBTrie<'this, DB, T>
+where
+    DB: Database,
+    T: Table,
+    T::Key: Encode + Decode,
+    T::Value: From<Vec<u8>>,
+{
+    pub fn new(hash_db: &'this mut HashDatabase<DB>, root: &'this mut H256) -> Self {
+        let builder = TrieDBMutBuilder::new(hash_db, root);
+        Self { trie: builder.build(), _t: Default::default() }
+    }
+
+    pub fn get(self, key: T::Key) -> Result<Option<T::Value>, TrieError> {
+        let value = self.trie.get(key.encode().as_ref())?;
+        Ok(value.map(|v| T::Value::from(v)))
+    }
+}
+
+#[derive(Debug, thiserror::Error, Clone, PartialEq, Eq)]
+pub enum TrieError {
+    #[error("{0:?}")]
+    ImplError(#[from] Box<trie_db::TrieError<reth_primitives::H256, parity_scale_codec::Error>>),
+    #[error("{0:?}")]
+    DecodeError(#[from] crate::Error),
+}
 
 struct DBTrieLayout;
 
@@ -44,9 +78,11 @@ impl Hasher for KeccakHasher {
     }
 }
 
-struct HashDatabase;
+pub struct HashDatabase<DB: Database> {
+    db: Arc<DB>,
+}
 
-impl<H: Hasher, T> HashDB<H, T> for HashDatabase {
+impl<H: Hasher, DB: Database, T> HashDB<H, T> for HashDatabase<DB> {
     fn get(&self, key: &H::Out, prefix: Prefix<'_>) -> Option<T> {
         todo!()
     }
@@ -68,7 +104,7 @@ impl<H: Hasher, T> HashDB<H, T> for HashDatabase {
     }
 }
 
-impl<H: Hasher, T> AsHashDB<H, T> for HashDatabase {
+impl<H: Hasher, T, DB: Database> AsHashDB<H, T> for HashDatabase<DB> {
     fn as_hash_db(&self) -> &dyn HashDB<H, T> {
         self
     }
@@ -81,17 +117,17 @@ impl<H: Hasher, T> AsHashDB<H, T> for HashDatabase {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::implementation::mdbx::test_utils::create_test_rw_db;
+    use crate::{implementation::mdbx::test_utils::create_test_rw_db, tables};
     use reth_libmdbx::WriteMap;
-    use reth_primitives::KECCAK_EMPTY;
+    use reth_primitives::{hex_literal::hex, Address, KECCAK_EMPTY};
     use trie_db::TrieDBMutBuilder;
 
     #[test]
     fn create_trie() {
         let db = create_test_rw_db::<WriteMap>();
         let mut root = KECCAK_EMPTY;
-        let mut hash_db = HashDatabase {};
-        let builder = TrieDBMutBuilder::new(&mut hash_db, &mut root);
-        let trie = DBTrie { db, trie: builder.build() };
+        let mut hash_db = HashDatabase { db };
+        let trie: DBTrie<'_, _, tables::PlainStorageState> = DBTrie::new(&mut hash_db, &mut root);
+        assert_eq!(trie.get(root).unwrap(), None);
     }
 }
