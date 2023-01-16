@@ -10,6 +10,9 @@
 /// Abstracted part of database, containing traits for transactions and cursors.
 pub mod abstraction;
 
+/// Abstracted merkle patricia tree
+pub mod trie;
+
 mod implementation;
 pub mod tables;
 mod utils;
