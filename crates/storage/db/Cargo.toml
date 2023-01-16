@@ -43,6 +43,7 @@ proptest-derive = { version = "0.3", optional = true }
 # trie
 # TODO: move to another crate?
 trie-db = "0.24.0"
+hash-db = "0.15.2"
 hash256-std-hasher = "0.15.1"
 
 [dev-dependencies]

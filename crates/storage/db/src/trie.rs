@@ -1,13 +1,19 @@
 #![allow(missing_docs, dead_code, unused_variables, unused_imports)]
-use hash256_std_hasher::Hash256StdHasher;
-use reth_primitives::{keccak256, H256};
-use trie_db::{Hasher, NodeCodec, TrieDBMut, TrieLayout};
+use std::sync::Arc;
 
-pub struct DBTrie<'this> {
-    inner: TrieDBMut<'this, DBTrieLayout>,
+use hash256_std_hasher::Hash256StdHasher;
+use hash_db::{AsHashDB, Prefix};
+use reth_primitives::{keccak256, H256};
+use trie_db::{HashDB, Hasher, NodeCodec, TrieDBMut, TrieLayout};
+
+use crate::database::Database;
+
+pub struct DBTrie<'this, DB: Database> {
+    db: Arc<DB>,
+    trie: TrieDBMut<'this, DBTrieLayout>,
 }
 
-impl<'this> DBTrie<'this> {
+impl<'this, DB: Database> DBTrie<'this, DB> {
     fn get() {}
 }
 
@@ -98,12 +104,54 @@ impl NodeCodec for DBCodec {
     }
 }
 
+struct HashDatabase;
+
+impl<H: Hasher, T> HashDB<H, T> for HashDatabase {
+    fn get(&self, key: &H::Out, prefix: Prefix<'_>) -> Option<T> {
+        todo!()
+    }
+
+    fn contains(&self, key: &H::Out, prefix: Prefix<'_>) -> bool {
+        todo!()
+    }
+
+    fn insert(&mut self, prefix: Prefix<'_>, value: &[u8]) -> H::Out {
+        todo!()
+    }
+
+    fn emplace(&mut self, key: H::Out, prefix: Prefix<'_>, value: T) {
+        todo!()
+    }
+
+    fn remove(&mut self, key: &H::Out, prefix: Prefix<'_>) {
+        todo!()
+    }
+}
+
+impl<H: Hasher, T> AsHashDB<H, T> for HashDatabase {
+    fn as_hash_db(&self) -> &dyn HashDB<H, T> {
+        self
+    }
+
+    fn as_hash_db_mut<'a>(&'a mut self) -> &'a mut (dyn HashDB<H, T> + 'a) {
+        self
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::implementation::mdbx::test_utils::create_test_rw_db;
+    use reth_libmdbx::WriteMap;
+    use reth_primitives::KECCAK_EMPTY;
+    use trie_db::TrieDBMutBuilder;
 
     #[test]
     fn create_trie() {
-        assert!(true);
+        let db = create_test_rw_db::<WriteMap>();
+        let mut root = KECCAK_EMPTY;
+        let mut hash_db = HashDatabase {};
+        let builder = TrieDBMutBuilder::new(&mut hash_db, &mut root);
+        let trie = DBTrie { db, trie: builder.build() };
     }
 }
