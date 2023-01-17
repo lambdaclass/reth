@@ -46,6 +46,13 @@ trie-db = "0.24.0"
 hash-db = "0.15.2"
 hash256-std-hasher = "0.15.1"
 reference-trie = "0.26.0"
+memory-db = "0.31.0"
+reth-rlp = { path = "../../common/rlp", features = [
+    "std",
+    "derive",
+    "ethereum-types",
+] }
+reth-rlp-derive = { path = "../../common/rlp-derive" }
 
 [dev-dependencies]
 # reth libs with arbitrary

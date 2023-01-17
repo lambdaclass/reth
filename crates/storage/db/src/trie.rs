@@ -1,16 +1,21 @@
 #![allow(missing_docs, dead_code, unused_variables, unused_imports)]
-use std::{cell::RefCell, marker::PhantomData, sync::Arc};
+use std::{cell::RefCell, collections::HashMap, marker::PhantomData, sync::Arc};
 
+use bytes::BytesMut;
 use hash256_std_hasher::Hash256StdHasher;
 use hash_db::{AsHashDB, Prefix};
+use memory_db::{HashKey, MemoryDB};
 use reference_trie::ReferenceNodeCodec;
-use reth_primitives::{keccak256, H256, KECCAK_EMPTY};
+use reth_primitives::{keccak256, rpc::H160, Account, Address, H256, KECCAK_EMPTY, U256};
+use reth_rlp::{Encodable, RlpDecodable, RlpEncodable};
 use trie_db::{
     CError, HashDB, Hasher, NodeCodec, TrieDBMut, TrieDBMutBuilder, TrieLayout, TrieMut,
 };
 
 use crate::{
     database::Database,
+    implementation::mdbx::tx::Tx,
+    models::AccountBeforeTx,
     table::{Decode, Encode, Table},
 };
 
@@ -114,20 +119,82 @@ impl<H: Hasher, T, DB: Database> AsHashDB<H, T> for HashDatabase<DB> {
     }
 }
 
+/// An Ethereum account.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default, RlpEncodable, RlpDecodable)]
+struct EthAccount {
+    /// Account nonce.
+    nonce: u64,
+    /// Account balance.
+    balance: U256,
+    /// Account's storage root.
+    storage_root: H256,
+    /// Hash of the account's bytecode.
+    code_hash: H256,
+}
+
+impl From<&Account> for EthAccount {
+    fn from(acc: &Account) -> Self {
+        EthAccount {
+            nonce: acc.nonce,
+            balance: acc.balance,
+            storage_root: H256::zero(),
+            code_hash: acc.bytecode_hash.unwrap_or(KECCAK_EMPTY),
+        }
+    }
+}
+
+pub struct DBTrieLoader;
+
+impl DBTrieLoader {
+    // Result<H256>
+    pub fn calculate_root(&mut self) -> H256 {
+        let account_changes = vec![AccountBeforeTx { address: Address::zero(), info: None }];
+        let accounts = HashMap::from([(
+            Address::zero(),
+            Account { nonce: 0, balance: U256::from(100), bytecode_hash: None },
+        )]);
+        let mut db = MemoryDB::<KeccakHasher, HashKey<KeccakHasher>, Vec<u8>>::default();
+        let mut root = H256::zero();
+        let mut trie: TrieDBMut<'_, DBTrieLayout> =
+            TrieDBMutBuilder::new(&mut db, &mut root).build();
+
+        for AccountBeforeTx { address, info } in account_changes {
+            let Account { nonce, balance, bytecode_hash } = accounts.get(&address).unwrap();
+            let mut account = EthAccount::from(accounts.get(&address).unwrap());
+
+            // storage_root
+            account.storage_root = self.calculate_storage_root(&address);
+
+            let mut bytes = BytesMut::new();
+            account.encode(&mut bytes);
+            trie.insert(address.as_bytes(), &bytes).unwrap();
+        }
+        *trie.root()
+    }
+
+    // Result<H256>
+    fn calculate_storage_root(&mut self, address: &Address) -> H256 {
+        H256::zero()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::{implementation::mdbx::test_utils::create_test_rw_db, tables};
     use reth_libmdbx::WriteMap;
     use reth_primitives::{hex_literal::hex, Address, KECCAK_EMPTY};
+    use std::str::FromStr;
     use trie_db::TrieDBMutBuilder;
 
     #[test]
-    fn create_trie() {
-        let db = create_test_rw_db::<WriteMap>();
-        let mut root = KECCAK_EMPTY;
-        let mut hash_db = HashDatabase { db };
-        let trie: DBTrie<'_, _, tables::PlainStorageState> = DBTrie::new(&mut hash_db, &mut root);
-        assert_eq!(trie.get(root).unwrap(), None);
+    fn empty_trie() {
+        // let db = create_test_rw_db::<WriteMap>();
+        let mut trie = DBTrieLoader {};
+        assert_eq!(
+            trie.calculate_root(),
+            H256::from_str("bc36789e7a1e281436464229828f817d6612f7b477d66591ff96a9e064bcc98a")
+                .unwrap()
+        );
     }
 }
