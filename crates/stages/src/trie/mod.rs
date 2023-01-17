@@ -106,7 +106,8 @@ impl From<Account> for EthAccount {
     }
 }
 
-pub(crate) struct DBTrieLoader;
+#[derive(Debug)]
+struct DBTrieLoader;
 
 impl DBTrieLoader {
     // Result<H256>
@@ -168,9 +169,11 @@ pub(crate) fn gather_account_changes() {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use reth_cli_utils::chainspec::{chain_spec_value_parser, ChainSpecification};
     use reth_db::{
         mdbx::{test_utils::create_test_rw_db, WriteMap},
         tables,
+        transaction::DbTxMut,
     };
     use reth_primitives::{hex_literal::hex, proofs::EMPTY_ROOT, Address, KECCAK_EMPTY};
     use std::str::FromStr;
@@ -182,5 +185,28 @@ mod tests {
         let db = create_test_rw_db::<WriteMap>();
         let tx = Transaction::new(db.as_ref()).unwrap();
         assert_eq!(trie.calculate_root(&tx), EMPTY_ROOT);
+    }
+
+    #[test]
+    fn verify_genesis() {
+        let mut trie = DBTrieLoader {};
+        let db = create_test_rw_db::<WriteMap>();
+        let tx = Transaction::new(db.as_ref()).unwrap();
+        let ChainSpecification { genesis, .. } = chain_spec_value_parser("mainnet").unwrap();
+
+        // Insert account state
+        for (address, account) in &genesis.alloc {
+            tx.put::<tables::PlainAccountState>(
+                *address,
+                Account {
+                    nonce: account.nonce.unwrap_or_default(),
+                    balance: account.balance,
+                    bytecode_hash: None,
+                },
+            )
+            .unwrap();
+        }
+
+        assert_eq!(trie.calculate_root(&tx), genesis.state_root);
     }
 }

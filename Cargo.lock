@@ -4643,6 +4643,7 @@ dependencies = [
  "rand 0.8.5",
  "rayon",
  "reference-trie",
+ "reth-cli-utils",
  "reth-db",
  "reth-downloaders",
  "reth-eth-wire",
