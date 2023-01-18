@@ -100,7 +100,9 @@ where
     }
 
     fn decode_plan(data: &[u8]) -> Result<NodePlan, Self::Error> {
-        // Self::decode_plan_inner_hashed(data)
+        if data == Self::empty_node() {
+            return Ok(NodePlan::Empty)
+        }
         todo!()
     }
 
@@ -110,7 +112,7 @@ where
 
     fn empty_node() -> &'static [u8] {
         // rlp('')
-        &[0x80]
+        &[reth_rlp::EMPTY_STRING_CODE]
     }
 
     fn leaf_node(
@@ -120,22 +122,25 @@ where
     ) -> Vec<u8> {
         let contains_hash = matches!(&value, Value::Node(..));
         let mut output: Vec<u8> = Vec::new();
-        // let mut output = if contains_hash {
-        //     partial_from_iterator_encode(partial, number_nibble, NodeKind::HashedValueLeaf)
-        // } else {
-        //     partial_from_iterator_encode(partial, number_nibble, NodeKind::Leaf)
-        // };
-        // match value {
-        //     Value::Inline(value) => {
-        //         debug_assert!(value.len() < H::LENGTH);
-        //         Compact(value.len() as u32).encode_to(&mut output);
-        //         output.extend_from_slice(value);
-        //     }
-        //     Value::Node(hash) => {
-        //         debug_assert!(hash.len() == H::LENGTH);
-        //         output.extend_from_slice(hash);
-        //     }
-        // }
+
+        // 0x2 for even 0x3 for odd
+        output.push(2u8 + (number_nibble % 2) as u8);
+
+        // add padding byte if odd
+        if number_nibble % 2 != 0 {
+            output.push(0u8);
+        }
+
+        match value {
+            Value::Inline(value) => value.encode(&mut output),
+            Value::Node(hash) => {
+                debug_assert!(hash.len() == H::LENGTH);
+
+                // es una de las dos \_(o.o)_/
+                // hash.encode(&mut output);
+                output.extend(hash);
+            }
+        }
         output
     }
 
@@ -144,52 +149,48 @@ where
         number_nibble: usize,
         child: ChildReference<Self::HashOut>,
     ) -> Vec<u8> {
-        // let mut output = partial_from_iterator_to_key(
-        //     partial,
-        //     number_nibble,
-        //     EXTENSION_NODE_OFFSET,
-        //     EXTENSION_NODE_OVER,
-        // );
-        // match child {
-        //     ChildReference::Hash(h) => h.as_ref().encode_to(&mut output),
-        //     ChildReference::Inline(inline_data, len) => {
-        //         (&AsRef::<[u8]>::as_ref(&inline_data)[..len]).encode_to(&mut output)
-        //     }
-        // };
-        // output
-        Vec::new()
+        let mut output: Vec<u8> = Vec::new();
+
+        // 0x0 for even 0x1 for odd
+        output.push((number_nibble % 2) as u8);
+
+        // add padding byte if odd
+        if number_nibble % 2 != 0 {
+            output.push(0u8);
+        }
+
+        output.extend(partial.take(number_nibble));
+
+        match child {
+            ChildReference::Hash(hash) => hash.as_ref().encode(&mut output),
+            ChildReference::Inline(inline_data, len) => {
+                inline_data.as_ref()[..len].as_ref().encode(&mut output)
+            }
+        };
+        output
     }
 
     fn branch_node(
         children: impl Iterator<Item = impl Borrow<Option<ChildReference<Self::HashOut>>>>,
         maybe_value: Option<Value<'_>>,
     ) -> Vec<u8> {
-        // let mut output = vec![0; BITMAP_LENGTH + 1];
-        // let mut prefix: [u8; 3] = [0; 3];
-        // let have_value = match maybe_value {
-        //     Some(Value::Inline(value)) => {
-        //         Compact(value.len() as u32).encode_to(&mut output);
-        //         output.extend_from_slice(value);
-        //         true
-        //     }
-        //     None => false,
-        //     _ => unimplemented!("unsupported"),
-        // };
-        // let has_children = children.map(|maybe_child| match maybe_child.borrow() {
-        //     Some(ChildReference::Hash(h)) => {
-        //         h.as_ref().encode_to(&mut output);
-        //         true
-        //     }
-        //     &Some(ChildReference::Inline(inline_data, len)) => {
-        //         inline_data.as_ref()[..len].encode_to(&mut output);
-        //         true
-        //     }
-        //     None => false,
-        // });
-        // branch_node_buffered(have_value, has_children, prefix.as_mut());
-        // output[0..BITMAP_LENGTH + 1].copy_from_slice(prefix.as_ref());
-        // output
-        Vec::new()
+        let mut output = Vec::new();
+        children
+            .map(|c| -> Vec<u8> {
+                match c.borrow() {
+                    Some(ChildReference::Hash(hash)) => hash.as_ref().to_vec(),
+                    Some(ChildReference::Inline(value, len)) => value.as_ref().to_vec(),
+                    None => [reth_rlp::EMPTY_STRING_CODE].to_vec(),
+                }
+            })
+            .for_each(|v| v[..].as_ref().encode(&mut output));
+
+        match maybe_value {
+            Some(Value::Inline(value)) => value.encode(&mut output),
+            None => output.push(reth_rlp::EMPTY_STRING_CODE),
+            _ => unimplemented!("unsupported"),
+        };
+        output
     }
 
     fn branch_node_nibbled(
@@ -198,51 +199,7 @@ where
         children: impl Iterator<Item = impl Borrow<Option<ChildReference<<H as Hasher>::Out>>>>,
         value: Option<Value<'_>>,
     ) -> Vec<u8> {
-        // let contains_hash = matches!(&value, Some(Value::Node(..)));
-        // let mut output = match (&value, contains_hash) {
-        //     (&None, _) => {
-        //         partial_from_iterator_encode(partial, number_nibble, NodeKind::BranchNoValue)
-        //     }
-        //     (_, false) => {
-        //         partial_from_iterator_encode(partial, number_nibble, NodeKind::BranchWithValue)
-        //     }
-        //     (_, true) => {
-        //         partial_from_iterator_encode(partial, number_nibble, NodeKind::HashedValueBranch)
-        //     }
-        // };
-
-        // let bitmap_index = output.len();
-        // let mut bitmap: [u8; BITMAP_LENGTH] = [0; BITMAP_LENGTH];
-        // (0..BITMAP_LENGTH).for_each(|_| output.push(0));
-        // match value {
-        //     Some(Value::Inline(value)) => {
-        //         Compact(value.len() as u32).encode_to(&mut output);
-        //         output.extend_from_slice(value);
-        //     }
-        //     Some(Value::Node(hash)) => {
-        //         debug_assert!(hash.len() == H::LENGTH);
-        //         output.extend_from_slice(hash);
-        //     }
-        //     None => (),
-        // }
-        // Bitmap::encode(
-        //     children.map(|maybe_child| match maybe_child.borrow() {
-        //         Some(ChildReference::Hash(h)) => {
-        //             h.as_ref().encode_to(&mut output);
-        //             true
-        //         }
-        //         &Some(ChildReference::Inline(inline_data, len)) => {
-        //             inline_data.as_ref()[..len].encode_to(&mut output);
-        //             true
-        //         }
-        //         None => false,
-        //     }),
-        //     bitmap.as_mut(),
-        // );
-        // output[bitmap_index..bitmap_index + BITMAP_LENGTH]
-        //     .copy_from_slice(&bitmap[..BITMAP_LENGTH]);
-        // output
-        Vec::new()
+        unimplemented!("doesn't use");
     }
 }
 
@@ -280,7 +237,10 @@ impl DBTrieLoader {
         let mut walker = accounts_cursor.walk(Address::zero()).unwrap();
         // let trie_cursor = tx.cursor_read::<tables::AccountsTrie>().unwrap();
 
-        let mut db = MemoryDB::<KeccakHasher, HashKey<KeccakHasher>, Vec<u8>>::default();
+        let mut db = MemoryDB::<KeccakHasher, HashKey<KeccakHasher>, Vec<u8>>::from_null_node(
+            RLPNodeCodec::<KeccakHasher>::empty_node(),
+            RLPNodeCodec::<KeccakHasher>::empty_node().to_vec(),
+        );
         let mut root = H256::zero();
         let mut trie: TrieDBMut<'_, DBTrieLayout> =
             TrieDBMutBuilder::new(&mut db, &mut root).build();
@@ -305,7 +265,10 @@ impl DBTrieLoader {
         tx: &Transaction<'_, DB>,
         address: Address,
     ) -> H256 {
-        let mut db = MemoryDB::<KeccakHasher, HashKey<KeccakHasher>, Vec<u8>>::default();
+        let mut db = MemoryDB::<KeccakHasher, HashKey<KeccakHasher>, Vec<u8>>::from_null_node(
+            RLPNodeCodec::<KeccakHasher>::empty_node(),
+            RLPNodeCodec::<KeccakHasher>::empty_node().to_vec(),
+        );
         let mut root = H256::zero();
         let mut trie: TrieDBMut<'_, DBTrieLayout> =
             TrieDBMutBuilder::new(&mut db, &mut root).build();
