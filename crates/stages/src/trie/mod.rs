@@ -329,13 +329,13 @@ impl DBTrieLoader {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use reth_cli_utils::chainspec::{chain_spec_value_parser, ChainSpecification};
+    use reth_cli_utils::chainspec::chain_spec_value_parser;
     use reth_db::{
         mdbx::{test_utils::create_test_rw_db, WriteMap},
         tables,
         transaction::DbTxMut,
     };
-    use reth_primitives::{hex_literal::hex, proofs::EMPTY_ROOT, Address, KECCAK_EMPTY};
+    use reth_primitives::{hex_literal::hex, proofs::EMPTY_ROOT, Address, ChainSpec, KECCAK_EMPTY};
     use std::str::FromStr;
     use trie_db::TrieDBMutBuilder;
 
@@ -352,7 +352,8 @@ mod tests {
         let mut trie = DBTrieLoader {};
         let db = create_test_rw_db::<WriteMap>();
         let tx = Transaction::new(db.as_ref()).unwrap();
-        let ChainSpecification { genesis, .. } = chain_spec_value_parser("mainnet").unwrap();
+        let chain = chain_spec_value_parser("mainnet").unwrap();
+        let genesis = chain.genesis();
 
         // Insert account state
         for (address, account) in &genesis.alloc {
