@@ -273,7 +273,7 @@ impl DBTrieLoader {
 
             let mut bytes = BytesMut::new();
             Encodable::encode(&value, &mut bytes);
-            trie.insert(keccak256(address).as_bytes(), &bytes.as_ref()).unwrap();
+            trie.insert(keccak256(address).as_bytes(), bytes.as_ref()).unwrap();
         }
 
         *trie.root()
