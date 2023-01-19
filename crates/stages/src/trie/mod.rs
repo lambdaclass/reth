@@ -2,9 +2,10 @@
 use std::{borrow::Borrow, collections::HashMap, marker::PhantomData};
 
 use crate::Transaction;
-use bytes::BytesMut;
+use bytes::{Buf, BytesMut};
 use hash256_std_hasher::Hash256StdHasher;
 use hash_db::{AsHashDB, Prefix};
+use itertools::Itertools;
 use memory_db::{HashKey, MemoryDB};
 use reference_trie::ReferenceNodeCodec;
 use reth_db::{
@@ -19,7 +20,7 @@ use reth_primitives::{
     keccak256, proofs::KeccakHasher, rpc::H160, Account, Address, Bytes, StorageEntry, H256,
     KECCAK_EMPTY, U256,
 };
-use reth_rlp::{Decodable, Encodable, RlpDecodable, RlpEncodable};
+use reth_rlp::{encode_iter, encode_list, Decodable, Encodable, RlpDecodable, RlpEncodable};
 use trie_db::{
     node::{NodePlan, Value},
     CError, ChildReference, HashDB, Hasher, NodeCodec, TrieDBMut, TrieDBMutBuilder, TrieLayout,
@@ -84,6 +85,26 @@ impl TrieLayout for DBTrieLayout {
 //     }
 // }
 
+fn encode_partial(
+    mut partial: impl Iterator<Item = u8>,
+    nibbles: usize,
+    terminating: bool,
+) -> Vec<u8> {
+    debug_assert_ne!(nibbles, 0);
+    let mut out = Vec::with_capacity(nibbles / 2 + 1);
+
+    let mut flag_byte = if terminating { 0x20 } else { 0x00 };
+
+    if nibbles % 2 != 0 {
+        // should never be None
+        flag_byte |= 0x10;
+        flag_byte |= partial.next().unwrap_or_default();
+    }
+    out.push(flag_byte);
+    out.extend(partial);
+    out
+}
+
 #[derive(Debug, Default, Clone)]
 struct RLPNodeCodec<H: Hasher>(PhantomData<H>);
 
@@ -120,28 +141,22 @@ where
         number_nibble: usize,
         value: Value<'_>,
     ) -> Vec<u8> {
-        let contains_hash = matches!(&value, Value::Node(..));
-        let mut output: Vec<u8> = Vec::new();
+        let encoded_vec = encode_partial(partial, number_nibble, true);
+        let encoded_partial = encoded_vec.as_ref();
+        let value = match value {
+            Value::Inline(node) => node,
+            Value::Node(hash) => hash,
+        };
 
-        // 0x2 for even 0x3 for odd
-        output.push(2u8 + (number_nibble % 2) as u8);
+        let mut output = BytesMut::new();
 
-        // add padding byte if odd
-        if number_nibble % 2 != 0 {
-            output.push(0u8);
+        #[derive(RlpEncodable)]
+        struct LeafNode<'a> {
+            encoded_partial: &'a [u8],
+            value: &'a [u8],
         }
-
-        match value {
-            Value::Inline(value) => value.encode(&mut output),
-            Value::Node(hash) => {
-                debug_assert!(hash.len() == H::LENGTH);
-
-                // es una de las dos \_(o.o)_/
-                // hash.encode(&mut output);
-                output.extend(hash);
-            }
-        }
-        output
+        LeafNode { encoded_partial, value }.encode(&mut output);
+        output.to_vec()
     }
 
     fn extension_node(
@@ -203,6 +218,12 @@ where
     }
 }
 
+impl<H: Hasher> RLPNodeCodec<H> {
+    fn to_nibbles(bytes: Vec<u8>, nibble_count: usize) -> Vec<u8> {
+        bytes.into_iter().flat_map(|b| [b >> 4, b & 0x0F]).collect_vec()
+    }
+}
+
 /// An Ethereum account.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default, RlpEncodable, RlpDecodable)]
 struct EthAccount {
@@ -246,14 +267,14 @@ impl DBTrieLoader {
             TrieDBMutBuilder::new(&mut db, &mut root).build();
 
         while let Some((address, account)) = walker.next().transpose().unwrap() {
-            let mut key = EthAccount::from(account);
+            let mut value = EthAccount::from(account);
 
             // storage_root
-            key.storage_root = self.calculate_storage_root(tx, address);
+            value.storage_root = self.calculate_storage_root(tx, address);
 
             let mut bytes = BytesMut::new();
-            Encodable::encode(&key, &mut bytes);
-            trie.insert(address.as_bytes(), &bytes).unwrap();
+            Encodable::encode(&value, &mut bytes);
+            trie.insert(keccak256(address).as_bytes(), &bytes.as_ref()).unwrap();
         }
 
         *trie.root()
@@ -298,7 +319,11 @@ mod tests {
         tables,
         transaction::DbTxMut,
     };
-    use reth_primitives::{hex_literal::hex, proofs::EMPTY_ROOT, Address, ChainSpec, KECCAK_EMPTY};
+    use reth_primitives::{
+        hex_literal::hex,
+        proofs::{genesis_state_root, EMPTY_ROOT},
+        Address, ChainSpec, GenesisAccount, KECCAK_EMPTY,
+    };
     use std::str::FromStr;
     use trie_db::TrieDBMutBuilder;
 
@@ -311,10 +336,32 @@ mod tests {
     }
 
     #[test]
-    fn verify_genesis() {
+    fn single_account_trie() {
         let mut trie = DBTrieLoader {};
         let db = create_test_rw_db::<WriteMap>();
         let tx = Transaction::new(db.as_ref()).unwrap();
+        let address = Address::from_str("9fe4abd71ad081f091bd06dd1c16f7e92927561e").unwrap();
+        let account = GenesisAccount { nonce: None, balance: U256::MAX, code: None, storage: None };
+        tx.put::<tables::PlainAccountState>(
+            address,
+            Account {
+                nonce: account.nonce.unwrap_or_default(),
+                balance: account.balance,
+                bytecode_hash: None,
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            trie.calculate_root(&tx),
+            genesis_state_root(HashMap::from([(address, account)]))
+        );
+    }
+
+    #[test]
+    fn verify_genesis() {
+        let mut trie = DBTrieLoader {};
+        let db = create_test_rw_db::<WriteMap>();
+        let mut tx = Transaction::new(db.as_ref()).unwrap();
         let chain = chain_spec_value_parser("mainnet").unwrap();
         let genesis = chain.genesis();
 
@@ -330,6 +377,7 @@ mod tests {
             )
             .unwrap();
         }
+        tx.commit().unwrap();
 
         assert_eq!(trie.calculate_root(&tx), genesis.state_root);
     }
