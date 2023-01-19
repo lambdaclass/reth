@@ -107,10 +107,6 @@ fn encode_partial(
     out
 }
 
-fn encode_hash<H: Hasher>(hash: &H::Out) -> Vec<u8> {
-    [[EMPTY_STRING_CODE + H::LENGTH as u8].as_slice(), hash.as_ref()].concat()
-}
-
 #[derive(Debug, Default, Clone)]
 struct RLPNodeCodec<H: Hasher>(PhantomData<H>);
 
@@ -171,7 +167,7 @@ where
         let value = match child {
             ChildReference::Hash(ref hash) => {
                 // 0x80 + length (RLP header)
-                encode_hash::<H>(hash)
+                hash
             }
             ChildReference::Inline(ref inline_data, len) => {
                 unreachable!("can't happen")
@@ -180,7 +176,7 @@ where
         };
 
         let mut output = Vec::new();
-        ValueNode { encoded_partial, value: &value }.encode(&mut output);
+        ValueNode { encoded_partial, value: value.as_ref() }.encode(&mut output);
         output
     }
 
@@ -221,13 +217,7 @@ where
     }
 }
 
-impl<H: Hasher> RLPNodeCodec<H> {
-    fn to_nibbles(bytes: Vec<u8>, nibble_count: usize) -> Vec<u8> {
-        bytes.into_iter().flat_map(|b| [b >> 4, b & 0x0F]).collect_vec()
-    }
-}
-
-#[derive(RlpEncodable)]
+#[derive(Debug, RlpEncodable)]
 struct ValueNode<'a> {
     encoded_partial: &'a [u8],
     value: &'a [u8],
