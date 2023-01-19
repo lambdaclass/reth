@@ -20,7 +20,9 @@ use reth_primitives::{
     keccak256, proofs::KeccakHasher, rpc::H160, Account, Address, Bytes, StorageEntry, H256,
     KECCAK_EMPTY, U256,
 };
-use reth_rlp::{encode_iter, encode_list, Decodable, Encodable, RlpDecodable, RlpEncodable};
+use reth_rlp::{
+    encode_iter, encode_list, Decodable, Encodable, RlpDecodable, RlpEncodable, EMPTY_STRING_CODE,
+};
 use trie_db::{
     node::{NodePlan, Value},
     CError, ChildReference, HashDB, Hasher, NodeCodec, TrieDBMut, TrieDBMutBuilder, TrieLayout,
@@ -105,6 +107,10 @@ fn encode_partial(
     out
 }
 
+fn encode_hash<H: Hasher>(hash: &H::Out) -> Vec<u8> {
+    [[EMPTY_STRING_CODE + H::LENGTH as u8].as_slice(), hash.as_ref()].concat()
+}
+
 #[derive(Debug, Default, Clone)]
 struct RLPNodeCodec<H: Hasher>(PhantomData<H>);
 
@@ -148,10 +154,10 @@ where
             Value::Node(hash) => hash,
         };
 
-        let mut output = BytesMut::new();
+        let mut output = Vec::new();
 
         ValueNode { encoded_partial, value }.encode(&mut output);
-        output.to_vec()
+        output
     }
 
     fn extension_node(
@@ -163,16 +169,19 @@ where
         let encoded_partial = encoded_vec.as_ref();
 
         let value = match child {
-            ChildReference::Hash(ref hash) => hash.as_ref(),
+            ChildReference::Hash(ref hash) => {
+                // 0x80 + length (RLP header)
+                encode_hash::<H>(hash)
+            }
             ChildReference::Inline(ref inline_data, len) => {
                 unreachable!("can't happen")
                 // inline_data.as_ref()[..len].as_ref()
             }
         };
 
-        let mut output = BytesMut::new();
-        ValueNode { encoded_partial, value }.encode(&mut output);
-        output.to_vec()
+        let mut output = Vec::new();
+        ValueNode { encoded_partial, value: &value }.encode(&mut output);
+        output
     }
 
     fn branch_node(
@@ -180,21 +189,25 @@ where
         maybe_value: Option<Value<'_>>,
     ) -> Vec<u8> {
         let mut output = Vec::new();
-        children
+        let mut children: Vec<_> = children
             .map(|c| -> Vec<u8> {
                 match c.borrow() {
                     Some(ChildReference::Hash(hash)) => hash.as_ref().to_vec(),
-                    Some(ChildReference::Inline(value, len)) => value.as_ref().to_vec(),
-                    None => [reth_rlp::EMPTY_STRING_CODE].to_vec(),
+                    Some(ChildReference::Inline(value, len)) => {
+                        unimplemented!();
+                        // value.as_ref().to_vec()
+                    }
+                    None => vec![],
                 }
             })
-            .for_each(|v| v[..].as_ref().encode(&mut output));
+            .collect();
 
-        match maybe_value {
-            Some(Value::Inline(value)) => value.encode(&mut output),
-            None => output.push(reth_rlp::EMPTY_STRING_CODE),
+        children.push(match maybe_value {
+            Some(Value::Inline(value)) => value.to_vec(),
+            None => vec![],
             _ => unimplemented!("unsupported"),
-        };
+        });
+        encode_iter(children.iter().map(|c| c.as_slice()), &mut output);
         output
     }
 
@@ -351,6 +364,46 @@ mod tests {
             trie.calculate_root(&tx),
             genesis_state_root(HashMap::from([(address, account)]))
         );
+    }
+
+    #[test]
+    fn two_accounts_trie() {
+        let mut trie = DBTrieLoader {};
+        let db = create_test_rw_db::<WriteMap>();
+        let tx = Transaction::new(db.as_ref()).unwrap();
+
+        let accounts = [
+            (
+                Address::from(hex!("9fe4abd71ad081f091bd06dd1c16f7e92927561e")),
+                GenesisAccount {
+                    nonce: Some(155),
+                    balance: U256::from(414241124),
+                    code: None,
+                    storage: None,
+                },
+            ),
+            (
+                Address::from(hex!("f8a6edaad4a332e6e550d0915a7fd5300b0b12d1")),
+                GenesisAccount {
+                    nonce: Some(3),
+                    balance: U256::from(78978),
+                    code: None,
+                    storage: None,
+                },
+            ),
+        ];
+        for (address, account) in accounts.clone() {
+            tx.put::<tables::PlainAccountState>(
+                address,
+                Account {
+                    nonce: account.nonce.unwrap_or_default(),
+                    balance: account.balance,
+                    bytecode_hash: account.code.map(|c| keccak256(c)),
+                },
+            )
+            .unwrap();
+        }
+        assert_eq!(trie.calculate_root(&tx), genesis_state_root(HashMap::from(accounts)));
     }
 
     #[test]
