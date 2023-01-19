@@ -150,12 +150,7 @@ where
 
         let mut output = BytesMut::new();
 
-        #[derive(RlpEncodable)]
-        struct LeafNode<'a> {
-            encoded_partial: &'a [u8],
-            value: &'a [u8],
-        }
-        LeafNode { encoded_partial, value }.encode(&mut output);
+        ValueNode { encoded_partial, value }.encode(&mut output);
         output.to_vec()
     }
 
@@ -164,25 +159,20 @@ where
         number_nibble: usize,
         child: ChildReference<Self::HashOut>,
     ) -> Vec<u8> {
-        let mut output: Vec<u8> = Vec::new();
+        let encoded_vec = encode_partial(partial, number_nibble, false);
+        let encoded_partial = encoded_vec.as_ref();
 
-        // 0x0 for even 0x1 for odd
-        output.push((number_nibble % 2) as u8);
-
-        // add padding byte if odd
-        if number_nibble % 2 != 0 {
-            output.push(0u8);
-        }
-
-        output.extend(partial.take(number_nibble));
-
-        match child {
-            ChildReference::Hash(hash) => hash.as_ref().encode(&mut output),
-            ChildReference::Inline(inline_data, len) => {
-                inline_data.as_ref()[..len].as_ref().encode(&mut output)
+        let value = match child {
+            ChildReference::Hash(ref hash) => hash.as_ref(),
+            ChildReference::Inline(ref inline_data, len) => {
+                unreachable!("can't happen")
+                // inline_data.as_ref()[..len].as_ref()
             }
         };
-        output
+
+        let mut output = BytesMut::new();
+        ValueNode { encoded_partial, value }.encode(&mut output);
+        output.to_vec()
     }
 
     fn branch_node(
@@ -222,6 +212,12 @@ impl<H: Hasher> RLPNodeCodec<H> {
     fn to_nibbles(bytes: Vec<u8>, nibble_count: usize) -> Vec<u8> {
         bytes.into_iter().flat_map(|b| [b >> 4, b & 0x0F]).collect_vec()
     }
+}
+
+#[derive(RlpEncodable)]
+struct ValueNode<'a> {
+    encoded_partial: &'a [u8],
+    value: &'a [u8],
 }
 
 /// An Ethereum account.
