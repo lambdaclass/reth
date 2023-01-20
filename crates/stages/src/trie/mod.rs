@@ -152,7 +152,7 @@ where
 
         let mut output = Vec::new();
 
-        ValueNode { encoded_partial, value }.encode(&mut output);
+        encode_iter([encoded_partial, value].into_iter(), &mut output);
         output
     }
 
@@ -167,7 +167,7 @@ where
         let value = match child {
             ChildReference::Hash(ref hash) => {
                 // 0x80 + length (RLP header)
-                hash
+                hash.as_ref()
             }
             ChildReference::Inline(ref inline_data, len) => {
                 unreachable!("can't happen")
@@ -176,7 +176,7 @@ where
         };
 
         let mut output = Vec::new();
-        ValueNode { encoded_partial, value: value.as_ref() }.encode(&mut output);
+        encode_iter([encoded_partial, value].into_iter(), &mut output);
         output
     }
 
@@ -215,12 +215,6 @@ where
     ) -> Vec<u8> {
         unimplemented!("doesn't use");
     }
-}
-
-#[derive(Debug, RlpEncodable)]
-struct ValueNode<'a> {
-    encoded_partial: &'a [u8],
-    value: &'a [u8],
 }
 
 /// An Ethereum account.
