@@ -296,7 +296,7 @@ impl DBTrieLoader {
             let mut bytes = BytesMut::new();
             let location = [H256::from(address).as_bytes(), storage_key.as_bytes()].concat();
             Encodable::encode(&value, &mut bytes);
-            trie.insert(location.as_slice(), &bytes).unwrap();
+            trie.insert(keccak256(location).as_bytes(), &bytes).unwrap();
         }
 
         *trie.root()
