@@ -307,7 +307,6 @@ mod tests {
     use super::*;
     use cita_trie::{PatriciaTrie, Trie};
     use hasher::HasherKeccak;
-    use reth_cli_utils::chainspec::chain_spec_value_parser;
     use reth_db::{
         mdbx::{test_utils::create_test_rw_db, WriteMap},
         tables,
@@ -318,6 +317,7 @@ mod tests {
         proofs::{genesis_state_root, EMPTY_ROOT},
         Address, ChainSpec, GenesisAccount, KECCAK_EMPTY,
     };
+    use reth_staged_sync::utils::chainspec::chain_spec_value_parser;
     use std::{str::FromStr, sync::Arc};
     use trie_db::TrieDBMutBuilder;
     use triehash::trie_root;

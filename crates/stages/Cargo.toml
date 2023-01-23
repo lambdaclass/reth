@@ -62,4 +62,4 @@ rand = "0.8.5"
 paste = "1.0"
 
 # trie
-reth-cli-utils = { path = "../cli/utils" }
+reth-staged-sync = { path = "../staged-sync" }
