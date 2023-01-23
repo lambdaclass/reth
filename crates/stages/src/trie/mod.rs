@@ -7,7 +7,10 @@ use reth_db::{
     tables,
     transaction::DbTx,
 };
-use reth_primitives::{proofs::KeccakHasher, Account, StorageEntry, H256, KECCAK_EMPTY, U256};
+use reth_primitives::{
+    proofs::{KeccakHasher, EMPTY_ROOT},
+    Account, StorageEntry, H256, KECCAK_EMPTY, U256,
+};
 use reth_rlp::{encode_iter, Encodable, RlpDecodable, RlpEncodable};
 use std::{borrow::Borrow, marker::PhantomData};
 use trie_db::{
@@ -220,7 +223,7 @@ impl From<Account> for EthAccount {
         EthAccount {
             nonce: acc.nonce,
             balance: acc.balance,
-            storage_root: H256::zero(),
+            storage_root: EMPTY_ROOT,
             code_hash: acc.bytecode_hash.unwrap_or(KECCAK_EMPTY),
         }
     }
@@ -250,7 +253,7 @@ impl DBTrieLoader {
         while let Some((hashed_address, account)) = walker.next().transpose().unwrap() {
             let mut value = EthAccount::from(account);
 
-            value.storage_root = dbg!(self.calculate_storage_root(tx, hashed_address));
+            value.storage_root = self.calculate_storage_root(tx, hashed_address).unwrap();
 
             let mut bytes = BytesMut::new();
             Encodable::encode(&value, &mut bytes);
@@ -265,7 +268,7 @@ impl DBTrieLoader {
         &mut self,
         tx: &Transaction<'_, DB>,
         address: H256,
-    ) -> H256 {
+    ) -> Result<H256, TrieError> {
         let mut db = MemoryDB::<KeccakHasher, HashKey<KeccakHasher>, Vec<u8>>::from_null_node(
             RLPNodeCodec::<KeccakHasher>::empty_node(),
             RLPNodeCodec::<KeccakHasher>::empty_node().to_vec(),
@@ -285,29 +288,37 @@ impl DBTrieLoader {
             trie.insert(storage_key.as_bytes(), &bytes).unwrap();
         }
 
-        *trie.root()
+        Ok(*trie.root())
     }
 }
+
+// another possible implementation, using cita_trie
+/*
+fn calculate_root<K: Into<Vec<u8>>, V: Into<Vec<u8>>>(storage: Vec<(K, V)>) -> H256 {
+    let memdb = Arc::new(cita_trie::MemoryDB::new(true));
+    let hasher = Arc::new(HasherKeccak::new());
+
+    let mut trie = PatriciaTrie::new(Arc::clone(&memdb), Arc::clone(&hasher));
+
+    for (key, value) in storage {
+        trie.insert(key.into(), value.into()).unwrap();
+    }
+    H256::from_slice(trie.root().unwrap().as_slice())
+}
+*/
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use cita_trie::{PatriciaTrie, Trie};
-    use hasher::HasherKeccak;
-    use itertools::Itertools;
     use reth_db::{
         mdbx::{test_utils::create_test_rw_db, WriteMap},
         tables,
         transaction::DbTxMut,
     };
-    use reth_primitives::{
-        hex_literal::hex,
-        keccak256,
-        proofs::{genesis_state_root, EMPTY_ROOT},
-        Address, GenesisAccount,
-    };
+    use reth_primitives::{hex_literal::hex, keccak256, proofs::EMPTY_ROOT, Address};
     use reth_staged_sync::utils::chainspec::chain_spec_value_parser;
-    use std::{collections::HashMap, str::FromStr, sync::Arc};
+    use std::{collections::HashMap, str::FromStr};
+    use triehash::sec_trie_root;
 
     #[test]
     fn empty_trie() {
@@ -323,19 +334,13 @@ mod tests {
         let db = create_test_rw_db::<WriteMap>();
         let tx = Transaction::new(db.as_ref()).unwrap();
         let address = Address::from_str("9fe4abd71ad081f091bd06dd1c16f7e92927561e").unwrap();
-        let account = GenesisAccount { nonce: None, balance: U256::MAX, code: None, storage: None };
-        tx.put::<tables::HashedAccount>(
-            keccak256(address),
-            Account {
-                nonce: account.nonce.unwrap_or_default(),
-                balance: account.balance,
-                bytecode_hash: None,
-            },
-        )
-        .unwrap();
+        let account = Account { nonce: 0, balance: U256::MAX, bytecode_hash: None };
+        tx.put::<tables::HashedAccount>(keccak256(address), account).unwrap();
+        let mut encoded_account = BytesMut::new();
+        EthAccount::from(account).encode(&mut encoded_account);
         assert_eq!(
             trie.calculate_root(&tx),
-            Ok(genesis_state_root(HashMap::from([(address, account)])))
+            Ok(H256(sec_trie_root::<KeccakHasher, _, _, _>([(address, encoded_account)]).0))
         );
     }
 
@@ -348,35 +353,25 @@ mod tests {
         let accounts = [
             (
                 Address::from(hex!("9fe4abd71ad081f091bd06dd1c16f7e92927561e")),
-                GenesisAccount {
-                    nonce: Some(155),
-                    balance: U256::from(414241124),
-                    code: None,
-                    storage: None,
-                },
+                Account { nonce: 155, balance: U256::from(414241124), bytecode_hash: None },
             ),
             (
                 Address::from(hex!("f8a6edaad4a332e6e550d0915a7fd5300b0b12d1")),
-                GenesisAccount {
-                    nonce: Some(3),
-                    balance: U256::from(78978),
-                    code: None,
-                    storage: None,
-                },
+                Account { nonce: 3, balance: U256::from(78978), bytecode_hash: None },
             ),
         ];
         for (address, account) in accounts.clone() {
-            tx.put::<tables::HashedAccount>(
-                keccak256(address),
-                Account {
-                    nonce: account.nonce.unwrap_or_default(),
-                    balance: account.balance,
-                    bytecode_hash: account.code.map(|c| keccak256(c)),
-                },
-            )
-            .unwrap();
+            tx.put::<tables::HashedAccount>(keccak256(address), account).unwrap();
         }
-        assert_eq!(trie.calculate_root(&tx), Ok(genesis_state_root(HashMap::from(accounts))));
+        let encoded_accounts = accounts.iter().map(|(k, v)| {
+            let mut bytes = BytesMut::new();
+            EthAccount::from(*v).encode(&mut bytes);
+            (k, bytes)
+        });
+        assert_eq!(
+            trie.calculate_root(&tx),
+            Ok(H256(sec_trie_root::<KeccakHasher, _, _, _>(encoded_accounts).0))
+        );
     }
 
     #[test]
@@ -388,35 +383,23 @@ mod tests {
         let address = Address::from_str("9fe4abd71ad081f091bd06dd1c16f7e92927561e").unwrap();
         let hashed_address = keccak256(address);
 
-        let storage = Vec::from([(keccak256(H256::from_low_u64_be(2)), U256::from(1))]);
-        let encoded_storage = storage
-            .iter()
-            .map(|(k, v)| {
-                let mut bytes = BytesMut::new();
-                v.encode(&mut bytes);
-                (k.as_bytes(), bytes.freeze())
-            })
-            .collect_vec();
+        let storage = Vec::from([(H256::from_low_u64_be(2), U256::from(1))]);
         for (k, v) in storage.clone() {
-            tx.put::<tables::HashedStorage>(hashed_address, StorageEntry { key: k, value: v })
-                .unwrap();
+            tx.put::<tables::HashedStorage>(
+                hashed_address,
+                StorageEntry { key: keccak256(k), value: v },
+            )
+            .unwrap();
         }
+        let encoded_storage = storage.iter().map(|(k, v)| {
+            let mut bytes = BytesMut::new();
+            v.encode(&mut bytes);
+            (k, bytes)
+        });
         assert_eq!(
             trie.calculate_storage_root(&tx, hashed_address),
-            calculate_root(encoded_storage)
+            Ok(H256(sec_trie_root::<KeccakHasher, _, _, _>(encoded_storage).0))
         );
-    }
-
-    fn calculate_root<K: Into<Vec<u8>>, V: Into<Vec<u8>>>(storage: Vec<(K, V)>) -> H256 {
-        let memdb = Arc::new(cita_trie::MemoryDB::new(true));
-        let hasher = Arc::new(HasherKeccak::new());
-
-        let mut trie = PatriciaTrie::new(Arc::clone(&memdb), Arc::clone(&hasher));
-
-        for (key, value) in storage {
-            trie.insert(key.into(), value.into()).unwrap();
-        }
-        H256::from_slice(trie.root().unwrap().as_slice())
     }
 
     #[test]
@@ -429,8 +412,8 @@ mod tests {
         let hashed_address = keccak256(address);
 
         let storage = HashMap::from([
-            (keccak256(H256::zero()), U256::from(3)),
-            (keccak256(H256::from_low_u64_be(2)), U256::from(1)),
+            (H256::zero(), U256::from(3)),
+            (H256::from_low_u64_be(2), U256::from(1)),
         ]);
         let code = "el buen fla";
         let account = Account {
@@ -441,26 +424,26 @@ mod tests {
         tx.put::<tables::HashedAccount>(hashed_address, account).unwrap();
 
         for (k, v) in storage.clone() {
-            tx.put::<tables::HashedStorage>(hashed_address, StorageEntry { key: k, value: v })
-                .unwrap();
+            tx.put::<tables::HashedStorage>(
+                hashed_address,
+                StorageEntry { key: keccak256(k), value: v },
+            )
+            .unwrap();
         }
         let mut bytes = Vec::new();
         let mut eth_account = EthAccount::from(account);
 
-        let encoded_storage = storage
-            .iter()
-            .map(|(k, v)| {
-                let mut bytes = BytesMut::new();
-                v.encode(&mut bytes);
-                (k.as_bytes(), bytes.freeze())
-            })
-            .collect_vec();
+        let encoded_storage = storage.iter().map(|(k, v)| {
+            let mut bytes = BytesMut::new();
+            v.encode(&mut bytes);
+            (k, bytes)
+        });
 
-        eth_account.storage_root = dbg!(calculate_root(encoded_storage));
+        eth_account.storage_root = H256(sec_trie_root::<KeccakHasher, _, _, _>(encoded_storage).0);
         eth_account.encode(&mut bytes);
         assert_eq!(
             trie.calculate_root(&tx),
-            Ok(calculate_root(vec![(hashed_address.to_fixed_bytes(), bytes)]))
+            Ok(H256(sec_trie_root::<KeccakHasher, _, _, _>([(address, bytes)]).0))
         );
     }
 
