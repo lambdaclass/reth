@@ -1,34 +1,19 @@
-#![allow(missing_docs, dead_code, unused_variables, unused_imports)]
-use std::{borrow::Borrow, collections::HashMap, marker::PhantomData};
-
 use crate::Transaction;
-use bytes::{Buf, BytesMut};
-use hash256_std_hasher::Hash256StdHasher;
-use hash_db::{AsHashDB, Prefix};
-use itertools::Itertools;
+use bytes::BytesMut;
 use memory_db::{HashKey, MemoryDB};
-use reference_trie::ReferenceNodeCodec;
 use reth_db::{
     cursor::{DbCursorRO, DbDupCursorRO},
     database::Database,
-    models::AccountBeforeTx,
-    table::{Decode, Encode, Table},
     tables,
     transaction::DbTx,
 };
-use reth_primitives::{
-    keccak256, proofs::KeccakHasher, rpc::H160, Account, Address, Bytes, StorageEntry, H256,
-    KECCAK_EMPTY, U256,
-};
-use reth_rlp::{
-    encode_iter, encode_list, Decodable, Encodable, RlpDecodable, RlpEncodable, EMPTY_STRING_CODE,
-};
+use reth_primitives::{proofs::KeccakHasher, Account, StorageEntry, H256, KECCAK_EMPTY, U256};
+use reth_rlp::{encode_iter, Encodable, RlpDecodable, RlpEncodable};
+use std::{borrow::Borrow, marker::PhantomData};
 use trie_db::{
     node::{NodePlan, Value},
-    CError, ChildReference, HashDB, Hasher, NodeCodec, TrieDBMut, TrieDBMutBuilder, TrieLayout,
-    TrieMut,
+    ChildReference, Hasher, NodeCodec, TrieDBMut, TrieDBMutBuilder, TrieLayout, TrieMut,
 };
-use triehash::sec_trie_root;
 
 #[derive(Debug, thiserror::Error, Clone, PartialEq, Eq)]
 pub(crate) enum TrieError {
@@ -170,7 +155,7 @@ where
                 // 0x80 + length (RLP header)
                 hash.as_ref()
             }
-            ChildReference::Inline(ref inline_data, len) => {
+            ChildReference::Inline(ref _inline_data, _len) => {
                 unreachable!("can't happen")
                 // inline_data.as_ref()[..len].as_ref()
             }
@@ -190,9 +175,8 @@ where
             .map(|c| -> Vec<u8> {
                 match c.borrow() {
                     Some(ChildReference::Hash(hash)) => hash.as_ref().to_vec(),
-                    Some(ChildReference::Inline(value, len)) => {
-                        unimplemented!();
-                        // value.as_ref().to_vec()
+                    Some(ChildReference::Inline(_value, _len)) => {
+                        unimplemented!("can't happen because all keys are equal length");
                     }
                     None => vec![],
                 }
@@ -209,10 +193,10 @@ where
     }
 
     fn branch_node_nibbled(
-        partial: impl Iterator<Item = u8>,
-        number_nibble: usize,
-        children: impl Iterator<Item = impl Borrow<Option<ChildReference<<H as Hasher>::Out>>>>,
-        value: Option<Value<'_>>,
+        _partial: impl Iterator<Item = u8>,
+        _number_nibble: usize,
+        _children: impl Iterator<Item = impl Borrow<Option<ChildReference<<H as Hasher>::Out>>>>,
+        _value: Option<Value<'_>>,
     ) -> Vec<u8> {
         unimplemented!("doesn't use");
     }
@@ -245,9 +229,12 @@ impl From<Account> for EthAccount {
 #[derive(Debug)]
 struct DBTrieLoader;
 
+#[allow(dead_code)]
 impl DBTrieLoader {
-    // Result<H256>
-    pub(crate) fn calculate_root<DB: Database>(&mut self, tx: &Transaction<'_, DB>) -> H256 {
+    pub(crate) fn calculate_root<DB: Database>(
+        &mut self,
+        tx: &Transaction<'_, DB>,
+    ) -> Result<H256, TrieError> {
         let mut accounts_cursor = tx.cursor_read::<tables::HashedAccount>().unwrap();
         let mut walker = accounts_cursor.walk(H256::zero()).unwrap();
         // let trie_cursor = tx.cursor_read::<tables::AccountsTrie>().unwrap();
@@ -270,7 +257,7 @@ impl DBTrieLoader {
             trie.insert(hashed_address.as_bytes(), bytes.as_ref()).unwrap();
         }
 
-        *trie.root()
+        Ok(*trie.root())
     }
 
     // Result<H256>
@@ -307,6 +294,7 @@ mod tests {
     use super::*;
     use cita_trie::{PatriciaTrie, Trie};
     use hasher::HasherKeccak;
+    use itertools::Itertools;
     use reth_db::{
         mdbx::{test_utils::create_test_rw_db, WriteMap},
         tables,
@@ -314,20 +302,19 @@ mod tests {
     };
     use reth_primitives::{
         hex_literal::hex,
+        keccak256,
         proofs::{genesis_state_root, EMPTY_ROOT},
-        Address, ChainSpec, GenesisAccount, KECCAK_EMPTY,
+        Address, GenesisAccount,
     };
     use reth_staged_sync::utils::chainspec::chain_spec_value_parser;
-    use std::{str::FromStr, sync::Arc};
-    use trie_db::TrieDBMutBuilder;
-    use triehash::trie_root;
+    use std::{collections::HashMap, str::FromStr, sync::Arc};
 
     #[test]
     fn empty_trie() {
         let mut trie = DBTrieLoader {};
         let db = create_test_rw_db::<WriteMap>();
         let tx = Transaction::new(db.as_ref()).unwrap();
-        assert_eq!(trie.calculate_root(&tx), EMPTY_ROOT);
+        assert_eq!(trie.calculate_root(&tx), Ok(EMPTY_ROOT));
     }
 
     #[test]
@@ -348,7 +335,7 @@ mod tests {
         .unwrap();
         assert_eq!(
             trie.calculate_root(&tx),
-            genesis_state_root(HashMap::from([(address, account)]))
+            Ok(genesis_state_root(HashMap::from([(address, account)])))
         );
     }
 
@@ -389,7 +376,7 @@ mod tests {
             )
             .unwrap();
         }
-        assert_eq!(trie.calculate_root(&tx), genesis_state_root(HashMap::from(accounts)));
+        assert_eq!(trie.calculate_root(&tx), Ok(genesis_state_root(HashMap::from(accounts))));
     }
 
     #[test]
@@ -473,7 +460,7 @@ mod tests {
         eth_account.encode(&mut bytes);
         assert_eq!(
             trie.calculate_root(&tx),
-            calculate_root(vec![(hashed_address.to_fixed_bytes(), bytes)])
+            Ok(calculate_root(vec![(hashed_address.to_fixed_bytes(), bytes)]))
         );
     }
 
@@ -499,6 +486,6 @@ mod tests {
         }
         tx.commit().unwrap();
 
-        assert_eq!(trie.calculate_root(&tx), genesis.state_root);
+        assert_eq!(trie.calculate_root(&tx), Ok(genesis.state_root));
     }
 }
