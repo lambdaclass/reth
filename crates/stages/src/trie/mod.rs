@@ -442,19 +442,20 @@ mod tests {
         let hashed_address = keccak256(address);
 
         let storage = HashMap::from([
-            (H256::zero(), U256::from(3)),
-            (H256::from_low_u64_be(2), U256::from(1)),
+            (keccak256(H256::zero()), U256::from(3)),
+            (keccak256(H256::from_low_u64_be(2)), U256::from(1)),
         ]);
-        let account =
-            Account { nonce: 155, balance: U256::from(414241124u32), bytecode_hash: None };
+        let code = "el buen fla";
+        let account = Account {
+            nonce: 155,
+            balance: U256::from(414241124u32),
+            bytecode_hash: Some(keccak256(code)),
+        };
         tx.put::<tables::HashedAccount>(hashed_address, account).unwrap();
 
         for (k, v) in storage.clone() {
-            tx.put::<tables::HashedStorage>(
-                hashed_address,
-                StorageEntry { key: keccak256(k), value: v },
-            )
-            .unwrap();
+            tx.put::<tables::HashedStorage>(hashed_address, StorageEntry { key: k, value: v })
+                .unwrap();
         }
         let mut bytes = Vec::new();
         let mut eth_account = EthAccount::from(account);
@@ -468,11 +469,11 @@ mod tests {
             })
             .collect_vec();
 
-        eth_account.storage_root = calculate_root(encoded_storage);
+        eth_account.storage_root = dbg!(calculate_root(encoded_storage));
         eth_account.encode(&mut bytes);
         assert_eq!(
             trie.calculate_root(&tx),
-            calculate_root(vec![(address.to_fixed_bytes(), bytes)])
+            calculate_root(vec![(hashed_address.to_fixed_bytes(), bytes)])
         );
     }
 
