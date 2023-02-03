@@ -2,7 +2,7 @@ on:
   push:
     branches:
       - main
-      - add-miri-ci-test
+      - add-miri-ci-testing
   pull_request:
 
 env:
