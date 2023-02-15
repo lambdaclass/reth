@@ -1,11 +1,11 @@
 use cita_trie::{PatriciaTrie, Trie};
 use hasher::HasherKeccak;
 use reth_db::{
-    cursor::{DbCursorRO, DbCursorRW, DbDupCursorRO},
-    database::Database,
+    cursor::{DbCursorRO, DbCursorRW, DbDupCursorRO, DbDupCursorRW},
+    database::{Database, DatabaseGAT},
     models::{AccountBeforeTx, TransitionIdAddress},
     tables,
-    transaction::{DbTx, DbTxMut},
+    transaction::{DbTx, DbTxMut, DbTxMutGAT},
 };
 use reth_primitives::{
     keccak256, proofs::EMPTY_ROOT, Account, Address, StorageEntry, StorageTrieEntry, TransitionId,
@@ -17,9 +17,10 @@ use reth_rlp::{
     EMPTY_STRING_CODE,
 };
 use std::{
+    cell::RefCell,
     collections::{BTreeMap, BTreeSet},
     ops::Range,
-    sync::Arc,
+    sync::{Arc, Mutex},
 };
 use tracing::*;
 
@@ -93,6 +94,13 @@ impl<'tx, 'itx, DB: Database> HashDatabase<'tx, 'itx, DB> {
 /// Database wrapper implementing HashDB trait.
 struct DupHashDatabase<'tx, 'itx, DB: Database> {
     tx: &'tx Transaction<'itx, DB>,
+    cursor: Mutex<
+        RefCell<
+            <<DB as DatabaseGAT<'itx>>::TXMut as DbTxMutGAT<'tx>>::DupCursorMut<
+                tables::StoragesTrie,
+            >,
+        >,
+    >,
     key: H256,
 }
 
@@ -103,29 +111,37 @@ where
     type Error = TrieError;
 
     fn get(&self, key: &[u8]) -> Result<Option<Vec<u8>>, Self::Error> {
-        let mut cursor = self.tx.cursor_dup_read::<tables::StoragesTrie>()?;
-        Ok(cursor.seek_by_key_subkey(self.key, H256::from_slice(key))?.map(|entry| entry.node))
+        let mut mx = self.cursor.lock().unwrap();
+        Ok(mx
+            .get_mut()
+            .seek_by_key_subkey(self.key, H256::from_slice(key))
+            .unwrap()
+            .map(|entry| entry.node))
     }
 
     fn contains(&self, key: &[u8]) -> Result<bool, Self::Error> {
-        Ok(<Self as cita_trie::DB>::get(self, key)?.is_some())
+        Ok(<Self as cita_trie::DB>::get(self, key).unwrap().is_some())
     }
 
     fn insert(&self, key: Vec<u8>, value: Vec<u8>) -> Result<(), Self::Error> {
+        let mut mx = self.cursor.lock().unwrap();
+        let new_entry = StorageTrieEntry { hash: H256::from_slice(key.as_slice()), node: value };
         // Caching and bulk inserting shouldn't be needed, as the data is ordered
-        self.tx.put::<tables::StoragesTrie>(
-            self.key,
-            StorageTrieEntry { hash: H256::from_slice(key.as_slice()), node: value },
-        )?;
+        let cursor = mx.get_mut();
+        cursor.seek_by_key_subkey(self.key, new_entry.hash)?.map(|_| cursor.delete_current());
+        self.tx.put::<tables::StoragesTrie>(self.key, new_entry)?;
         Ok(())
     }
 
     fn remove(&self, key: &[u8]) -> Result<(), Self::Error> {
-        let mut cursor = self.tx.cursor_dup_write::<tables::StoragesTrie>()?;
+        let mut mx = self.cursor.lock().unwrap();
+        let cursor = mx.get_mut();
         cursor
-            .seek_by_key_subkey(self.key, H256::from_slice(key))?
+            .seek_by_key_subkey(self.key, H256::from_slice(key))
+            .unwrap()
             .map(|_| cursor.delete_current())
-            .transpose()?;
+            .transpose()
+            .unwrap();
         Ok(())
     }
 
@@ -139,13 +155,15 @@ impl<'tx, 'itx, DB: Database> DupHashDatabase<'tx, 'itx, DB> {
     fn new(tx: &'tx Transaction<'itx, DB>, key: H256) -> Result<Self, TrieError> {
         let root = EMPTY_ROOT;
         let mut cursor = tx.cursor_dup_write::<tables::StoragesTrie>()?;
-        if cursor.seek_by_key_subkey(key, root)?.is_none() {
-            tx.put::<tables::StoragesTrie>(
-                key,
-                StorageTrieEntry { hash: root, node: [EMPTY_STRING_CODE].to_vec() },
-            )?;
+        if cursor.seek_by_key_subkey(key, root).unwrap().is_none() {
+            cursor
+                .append_dup(
+                    key,
+                    StorageTrieEntry { hash: root, node: [EMPTY_STRING_CODE].to_vec() },
+                )
+                .unwrap();
         }
-        Ok(Self { tx, key })
+        Ok(Self { tx, cursor: Mutex::new(RefCell::new(cursor)), key })
     }
 
     /// Instantiates a new Database for the storage trie, with an existing root
@@ -153,10 +171,9 @@ impl<'tx, 'itx, DB: Database> DupHashDatabase<'tx, 'itx, DB> {
         if root == EMPTY_ROOT {
             return Self::new(tx, key)
         }
-        tx.cursor_dup_read::<tables::StoragesTrie>()?
-            .seek_by_key_subkey(key, root)?
-            .ok_or(TrieError::MissingRoot(root))?;
-        Ok(Self { tx, key })
+        let mut cursor = tx.cursor_dup_write::<tables::StoragesTrie>()?;
+        cursor.seek_by_key_subkey(key, root).unwrap().ok_or(TrieError::MissingRoot(root)).unwrap();
+        Ok(Self { tx, cursor: Mutex::new(RefCell::new(cursor)), key })
     }
 }
 
@@ -201,8 +218,8 @@ impl DBTrieLoader {
         &self,
         tx: &Transaction<'_, DB>,
     ) -> Result<H256, TrieError> {
-        tx.clear::<tables::AccountsTrie>()?;
-        tx.clear::<tables::StoragesTrie>()?;
+        tx.clear::<tables::AccountsTrie>().unwrap();
+        tx.clear::<tables::StoragesTrie>().unwrap();
 
         let mut accounts_cursor = tx.cursor_read::<tables::HashedAccount>()?;
         let mut walker = accounts_cursor.walk(None)?;
@@ -216,7 +233,7 @@ impl DBTrieLoader {
         while let Some((hashed_address, account)) = walker.next().transpose()? {
             let value = EthAccount::from_with_root(
                 account,
-                self.calculate_storage_root(tx, hashed_address)?,
+                self.calculate_storage_root(tx, hashed_address).unwrap(),
             );
 
             let mut out = Vec::new();
@@ -239,19 +256,19 @@ impl DBTrieLoader {
 
         let mut trie = PatriciaTrie::new(Arc::clone(&db), Arc::clone(&hasher));
 
-        let mut storage_cursor = tx.cursor_dup_read::<tables::HashedStorage>()?;
+        let mut storage_cursor = tx.cursor_dup_read::<tables::HashedStorage>().unwrap();
 
         // Should be able to use walk_dup, but any call to next() causes an assert fail in mdbx.c
         // let mut walker = storage_cursor.walk_dup(address, H256::zero())?;
-        let mut current = storage_cursor.seek_by_key_subkey(address, H256::zero())?;
+        let mut current = storage_cursor.seek_by_key_subkey(address, H256::zero()).unwrap();
 
         while let Some(StorageEntry { key: storage_key, value }) = current {
             let out = encode_fixed_size(&value).to_vec();
-            trie.insert(storage_key.to_vec(), out)?;
-            current = storage_cursor.next_dup()?.map(|(_, v)| v);
+            trie.insert(storage_key.to_vec(), out).unwrap();
+            current = storage_cursor.next_dup().unwrap().map(|(_, v)| v);
         }
 
-        let root = H256::from_slice(trie.root()?.as_slice());
+        let root = H256::from_slice(trie.root().unwrap().as_slice());
 
         Ok(root)
     }
