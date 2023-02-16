@@ -1,9 +1,10 @@
 //! Contains RPC handler implementations specific to blocks.
 
 use crate::{eth::error::EthResult, EthApi};
-use reth_primitives::{rpc::BlockId, H256};
+use reth_primitives::{rpc::BlockId, H256, U256};
 use reth_provider::{BlockProvider, StateProviderFactory};
-use reth_rpc_types::RichBlock;
+use reth_rpc_types::{RichBlock, Block};
+use std::collections::BTreeMap;
 
 impl<Client, Pool, Network> EthApi<Client, Pool, Network>
 where
@@ -14,12 +15,17 @@ where
         hash: H256,
         _full: bool,
     ) -> EthResult<Option<RichBlock>> {
-        let block = self.client().block(BlockId::Hash(hash.0.into()))?;
-        if let Some(_block) = block {
+        let hash = BlockId::Hash(hash.0.into());
+        println!("Hash's value: {:?}", hash);
+        let block = self.client().block(hash)?;
+        println!("{:?}", block);
+        if let Some(block) = block {
             // TODO: GET TD FOR BLOCK - needs block provider? or header provider?
             // let total_difficulty = todo!();
             // let rich_block = Block::from_block_full(block, total_difficulty);
-            todo!()
+            let full_block = Block::from_block_full(block, U256::from(0)).unwrap();
+            Ok(Some(RichBlock {inner: full_block, extra_info: BTreeMap::new()}))
+            // todo!()
         } else {
             Ok(None)
         }

@@ -2,7 +2,7 @@
 //! Handles RPC requests for the `eth_` namespace.
 
 use crate::{
-    eth::{api::EthApi, error::EthApiError},
+    eth::{api::EthApi, error::{EthApiError, EthResult}},
     result::{internal_rpc_err, ToRpcResult},
 };
 use jsonrpsee::core::RpcResult as Result;
@@ -56,8 +56,12 @@ where
         Ok(Some(EthApiSpec::chain_id(self)))
     }
 
-    async fn block_by_hash(&self, _hash: H256, _full: bool) -> Result<Option<RichBlock>> {
-        Err(internal_rpc_err("unimplemented"))
+    async fn block_by_hash(&self, hash: H256, _full: bool) -> Result<Option<RichBlock>> {
+        if let Ok(block) = self.block_by_hash(hash, true).await {
+            Ok(block)
+        } else {
+            Err(internal_rpc_err("unimplemented"))
+        }
     }
 
     async fn block_by_number(
