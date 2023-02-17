@@ -100,15 +100,15 @@ impl<DB: Database> BlockProvider for ShareableDatabase<DB> {
     }
 
     fn block(&self, id: BlockId) -> Result<Option<Block>> {
-        let num = self.block_number_for_id(id).unwrap().unwrap();
-        let header = self.db.view(|tx| tx.get::<tables::Headers>(num).ok()?)?.unwrap();
+        let block_num = self.block_number_for_id(id).unwrap().unwrap();
+        let header = self.db.view(|tx| tx.get::<tables::Headers>(block_num).ok()?)?.unwrap();
         let body = self.db.view(|tx| -> Result<Vec<TransactionSigned>> {
             let mut cursor = tx.cursor_read::<tables::Transactions>()?;
-            let tx_range = tx.get::<tables::BlockBodies>(num)?.unwrap().tx_id_range();
+            let tx_range = tx.get::<tables::BlockBodies>(block_num)?.unwrap().tx_id_range();
             Ok(cursor.walk_range(tx_range)?.map(|x| x.unwrap().1).collect::<Vec<_>>())
         })??;
         let ommers =
-            match self.db.view(|tx| tx.get::<tables::BlockOmmers>(num).ok()?)? {
+            match self.db.view(|tx| tx.get::<tables::BlockOmmers>(block_num).ok()?)? {
                 Some(ommers) => ommers.ommers,
                 None => vec![]
             };
