@@ -5,7 +5,7 @@ use reth_db::{
     transaction::DbTx,
 };
 use reth_interfaces::Result;
-use reth_primitives::{rpc::BlockId, Block, BlockHash, BlockNumber, ChainInfo, Header, H256, U256};
+use reth_primitives::{rpc::BlockId, Block, BlockHash, BlockNumber, ChainInfo, Header, H256, U256, TransactionSigned};
 use std::ops::RangeBounds;
 
 mod state;
@@ -99,9 +99,32 @@ impl<DB: Database> BlockProvider for ShareableDatabase<DB> {
         Ok(ChainInfo { best_hash, best_number, last_finalized: None, safe_finalized: None })
     }
 
-    fn block(&self, _id: BlockId) -> Result<Option<Block>> {
+    fn block(&self, id: BlockId) -> Result<Option<Block>> {
+        let num = self.block_number_for_id(id).unwrap().unwrap();
+        let header = self.db.view(|tx| tx.get::<tables::Headers>(num).ok()?)?.unwrap();
+        let body = self.db.view(|tx| -> Result<Vec<TransactionSigned>> {
+            let mut cursor = tx.cursor_read::<tables::Transactions>()?;
+            let tx_range = tx.get::<tables::BlockBodies>(num)?.unwrap().tx_id_range();
+            Ok(cursor.walk_range(tx_range)?.map(|x| x.unwrap().1).collect::<Vec<_>>())
+        })??;
+        let ommers =
+            match self.db.view(|tx| tx.get::<tables::BlockOmmers>(num).ok()?)? {
+                Some(ommers) => ommers.ommers,
+                None => vec![]
+            };
+        // let ommers = vec![];
+        let withdrawals = None;
+            // self.db.view(|tx| tx.get::<tables::BlockWithdrawals>(0).ok()?)?;
+        let block = Block {
+            header,
+            body,
+            ommers,
+            withdrawals
+        };
+        Ok(Some(block))
+        // self.db.view(|tx| tx.get::<tables::BlockBodies>(0).ok()?)
         // TODO
-        Ok(None)
+        // Ok(None)
     }
 
     fn block_number(&self, hash: H256) -> Result<Option<BlockNumber>> {

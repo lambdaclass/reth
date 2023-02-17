@@ -2,7 +2,10 @@
 //! Handles RPC requests for the `eth_` namespace.
 
 use crate::{
-    eth::{api::EthApi, error::{EthApiError, EthResult}},
+    eth::{
+        api::EthApi,
+        error::{EthApiError, EthResult},
+    },
     result::{internal_rpc_err, ToRpcResult},
 };
 use jsonrpsee::core::RpcResult as Result;
