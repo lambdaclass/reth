@@ -107,6 +107,9 @@ impl<'a> Arbitrary<'a> for IntegerList {
 mod test {
     use super::*;
 
+    use serde::Serializer;
+    use serde_json::value::Serializer as OtherSerializer;
+
     #[test]
     fn test_integer_list() {
         let original_list = [1, 2, 3];
@@ -123,5 +126,15 @@ mod test {
 
         let blist = ef_list.to_bytes();
         assert!(IntegerList::from_bytes(&blist).unwrap() == ef_list)
+    }
+
+    #[test]
+    fn test_integer_list_serialize() {
+        let integer_list = IntegerList::new([1, 2, 3]).unwrap();
+
+        assert_eq!(
+            integer_list.serialize(OtherSerializer).unwrap(),
+            OtherSerializer.serialize_bytes(&integer_list.to_bytes()).unwrap()
+        )
     }
 }
