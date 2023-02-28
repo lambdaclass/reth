@@ -35,7 +35,7 @@ mod withdrawal;
 /// Helper function for calculating Merkle proofs and hashes
 pub mod proofs;
 
-pub use account::Account;
+pub use account::{Account, Bytecode};
 pub use bits::H512;
 pub use block::{Block, BlockHashOrNumber, BlockId, BlockNumberOrTag, SealedBlock};
 pub use bloom::Bloom;

@@ -31,6 +31,16 @@ impl Account {
     }
 }
 
+/// An account's bytecode. Holds a reference counter.
+#[derive(Debug, Default, Eq, PartialEq, Clone)]
+#[main_codec]
+pub struct Bytecode {
+    /// Reference counter of the bytecode.
+    references: u64,
+    /// Raw bytecode.
+    code: Vec<u8>,
+}
+
 #[cfg(test)]
 mod tests {
     use crate::{Account, U256};
